@@ -224,9 +224,38 @@ def extract_candidate_entities(clean_text: str, file_name: str) -> Dict[str, Any
     email_match = re.search(r"([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)", clean_text)
     email = email_match.group(1).strip() if email_match else ""
 
-    # 3. Phone Number (supports international e.g. +91 98xxxxxx01 or +91 90000 44444)
-    phone_match = re.search(r"(\+?\d{1,3}[-.\s]?(?:\d{3,5}[-.\s]?){2,3}\d{2,5}|\+?\d{10,12})", clean_text)
-    phone = phone_match.group(1).strip() if phone_match else ""
+    # 3. Phone Number (Extracted cleanly without fake fallback)
+    phone = ""
+    # Try labeled phone first
+    phone_label_m = re.search(r"(?im)(?:Phone|Telephone|Tel|Mobile|Mob|Cell|Contact|Ph)\s*[:\-–]?\s*(\+?[\d\s().-]{7,25})", clean_text)
+    if phone_label_m:
+        raw_num = phone_label_m.group(1).strip()
+        digits_only = re.sub(r"\D", "", raw_num)
+        if 7 <= len(digits_only) <= 15:
+            phone = re.sub(r"[,;|\s]+$", "", raw_num).strip()
+
+    if not phone and lines:
+        for l in lines[:10]:
+            # Skip dates and work experience lines
+            if re.search(r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|present|current)\b", l, re.I):
+                continue
+            if re.search(r"\b(?:19|20)\d{2}\s*[-–]\s*(?:19|20)\d{2}\b", l) and "+" not in l:
+                continue
+            cand_m = re.search(r"(?:(?:\+|00)\d{1,3}[\s.-]?)?(?:\(?\d{2,5}\)?[\s.-]?)?\d{3,5}[\s.-]?\d{3,5}(?:[\s.-]?\d{2,5})?", l)
+            if cand_m:
+                cand_str = cand_m.group(0).strip()
+                digits_only = re.sub(r"\D", "", cand_str)
+                if 10 <= len(digits_only) <= 15 or (cand_str.startswith("+") and 7 <= len(digits_only) <= 15):
+                    phone = cand_str
+                    break
+
+    if not phone:
+        intl_m = re.search(r"(?:\+|00)\d{1,3}[\s.-]?\(?\d{2,5}\)?[\s.-]?\d{3,5}[\s.-]?\d{3,5}", clean_text)
+        if intl_m:
+            cand_str = intl_m.group(0).strip()
+            digits_only = re.sub(r"\D", "", cand_str)
+            if 7 <= len(digits_only) <= 15:
+                phone = cand_str
 
     # 4. Location
     loc_match = re.search(r"(?im)(?:location|address|city)\s*[:\-–]\s*([^\n,;]{2,40}(?:,\s*[A-Z]{2}|,\s*[A-Za-z\s]+)?)", clean_text)
@@ -268,7 +297,12 @@ def extract_candidate_entities(clean_text: str, file_name: str) -> Dict[str, Any
 
     # 8. Projects Extraction
     projects = []
-    proj_section = extract_section_text(clean_text, ["projects", "personal projects", "academic projects"])
+    proj_section = extract_section_text(clean_text, [
+        "projects", "personal projects", "academic projects", "key projects", 
+        "notable projects", "technical projects", "project work", "portfolio", 
+        "selected projects", "featured projects", "systems & projects", 
+        "applications & projects", "open source projects"
+    ])
     if proj_section:
         projects = parse_projects_section(proj_section)
 
@@ -506,48 +540,115 @@ def parse_work_history_section(section_text: str) -> List[Dict[str, Any]]:
 
 def parse_projects_section(section_text: str) -> List[Dict[str, Any]]:
     """Parses project entries into structured list without fake fallbacks."""
-    cleaned = clean_section_header_prefix(section_text, ["projects", "personal projects", "academic projects"])
+    cleaned = clean_section_header_prefix(section_text, [
+        "projects", "personal projects", "academic projects", "key projects",
+        "notable projects", "technical projects", "project work", "portfolio",
+        "selected projects", "featured projects", "systems & projects",
+        "applications & projects", "open source projects"
+    ])
     lines = [l.strip() for l in cleaned.split("\n") if l.strip()]
     items = []
     i = 0
+    next_headers = [
+        "SKILLS", "TECHNICAL SKILLS", "EXPERIENCE", "WORK HISTORY", 
+        "EDUCATION", "CERTIFICATIONS", "AWARDS", "PUBLICATIONS"
+    ]
+    
     while i < len(lines):
         line = lines[i]
-        line_clean = re.sub(r"^[•*\-\d.]+\s*", "", line).strip()
+        line_clean = re.sub(r"^[#*•\-\d.]+\s*", "", line).strip()
+        if not line_clean or any(line_clean.upper().startswith(h) for h in next_headers):
+            i += 1
+            continue
+
         title = line_clean
         techs = []
+        period = ""
+        link = ""
+        github = ""
+        demo_url = ""
+
+        # Extract URLs
+        url_m = re.search(r"(https?://[^\s)]+|github\.com/[^\s)]+)", line_clean, re.I)
+        if url_m:
+            raw_url = url_m.group(1)
+            found_url = raw_url if raw_url.startswith("http") else f"https://{raw_url}"
+            if "github.com" in found_url:
+                github = found_url
+            else:
+                demo_url = found_url
+            link = found_url
+            line_clean = line_clean.replace(url_m.group(0), "").replace("(", "").replace(")", "").replace("|", " ").strip()
+
+        # Extract date/period
+        date_m = re.search(r"\(?((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s*\d{0,4}\s*[-–]\s*(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|present|current|\d{4})|\b20\d\d\s*[-–]\s*20\d\d\b|\b20\d\d\b)\)?", line_clean, re.I)
+        if date_m:
+            period = date_m.group(1).strip()
+            line_clean = line_clean.replace(date_m.group(0), "").strip()
 
         # Extract parenthetical tech stack e.g. Campus Marketplace (MERN Stack)
         tech_m = re.search(r"\(([^)]+)\)", line_clean)
         if tech_m:
             tech_str = tech_m.group(1)
-            techs = [t.strip() for t in re.split(r"[,/|]", tech_str) if t.strip()]
+            techs = [t.strip() for t in re.split(r"[,/|•]", tech_str) if t.strip()]
             title = line_clean.replace(tech_m.group(0), "").strip()
-
-        if " — " in line_clean or " - " in line_clean or " – " in line_clean:
-            parts = re.split(r"\s+[—–\-]+\s+", line_clean, maxsplit=1)
+        elif " — " in line_clean or " - " in line_clean or " – " in line_clean or " | " in line_clean:
+            parts = re.split(r"\s+[—–\-–|]\s+", line_clean, maxsplit=1)
             title = parts[0].strip()
-            if len(parts) > 1:
-                techs = [t.strip() for t in re.split(r"[,/|]", parts[1]) if t.strip()]
+            if len(parts) > 1 and re.search(r"react|node|python|java|sql|aws|docker|typescript|next|vue|fastapi|django|flask|mongo|tailwind|css|html", parts[1], re.I):
+                clean_tech_part = re.sub(r"^(?:Tech|Stack|Tools|Technologies)\s*[:\-–]?\s*", "", parts[1], flags=re.I)
+                techs = [t.strip() for t in re.split(r"[,/|•]", clean_tech_part) if t.strip()]
+
+        title = re.sub(r"[—–\-–|:,]+$", "", title).strip()
 
         desc_bullets = []
         i += 1
         while i < len(lines):
             cur = lines[i]
             cur_clean = re.sub(r"^[•*\-\d.]+\s*", "", cur).strip()
-            if any(cur_clean.upper().startswith(h) for h in ["SKILLS", "EXPERIENCE", "EDUCATION", "CERTIFICATIONS"]):
+            if any(cur_clean.upper().startswith(h) for h in next_headers):
                 break
-            # New project item if line doesn't start with bullet marker and doesn't look like a continuation bullet
-            if not cur.startswith("-") and not cur.startswith("•") and not cur.startswith("*"):
-                # If it's a new title line
+
+            # Explicit tech line
+            tech_stack_m = re.match(r"^(?:Tech(?:nologies|\s*Stack)?|Tools|Built with|Environment|Stack)\s*[:\-–]\s*(.+)", cur_clean, re.I)
+            if tech_stack_m:
+                extracted = [t.strip() for t in re.split(r"[,/|•]", tech_stack_m.group(1)) if t.strip()]
+                techs = list(dict.fromkeys(techs + extracted))
+                i += 1
+                continue
+
+            # Link line
+            line_url_m = re.search(r"(https?://[^\s)]+|github\.com/[^\s)]+)", cur_clean, re.I)
+            if line_url_m and (len(cur_clean) < 100 or re.search(r"link|github|demo|repo|code", cur_clean, re.I)):
+                raw_u = line_url_m.group(1)
+                f_url = raw_u if raw_u.startswith("http") else f"https://{raw_u}"
+                if "github.com" in f_url:
+                    github = f_url
+                else:
+                    demo_url = f_url
+                link = f_url
+                i += 1
+                continue
+
+            is_bullet = cur.startswith("-") or cur.startswith("•") or cur.startswith("*")
+            is_header = cur.startswith("#") or bool(re.search(r"\(([^)]+)\)|\s+[—–\-–|]\s+", cur))
+            if not is_bullet and is_header and desc_bullets:
                 break
-            desc_bullets.append(cur_clean)
+
+            if cur_clean:
+                desc_bullets.append(cur_clean)
             i += 1
 
-        items.append({
-            "title": title,
-            "technologies": techs,
-            "description": " ".join(desc_bullets) if desc_bullets else ""
-        })
+        if len(title) >= 2:
+            items.append({
+                "title": title,
+                "technologies": techs,
+                "description": " ".join(desc_bullets) if desc_bullets else "",
+                "period": period,
+                "link": link,
+                "github": github,
+                "demoUrl": demo_url
+            })
     return items
 
 

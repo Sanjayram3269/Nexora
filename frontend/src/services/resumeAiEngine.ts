@@ -183,13 +183,12 @@ export function analyzeResumeTextClient(
     if (!name) name = 'Applicant Candidate';
   }
 
-  // 3. Email Address
+  // 3. Email Address (No fake fallback)
   const emailMatch = cleanText.match(/([a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+)/);
-  const email = emailMatch ? emailMatch[1] : `${name.toLowerCase().replace(/\s+/g, '.')}@applicant.net`;
+  const email = emailMatch ? emailMatch[1].trim() : '';
 
-  // 4. Phone Number (International format e.g. +91 90000 44444 or +1 555-0199)
-  const phoneMatch = cleanText.match(/(\+?\d{1,3}[-.\s]?(?:\d{3,5}[-.\s]?){2,3}\d{2,5})/);
-  const phone = phoneMatch ? phoneMatch[1].trim() : '+91 90000 44444';
+  // 4. Phone Number (Extract actual number as in resume without fake fallbacks)
+  const phone = extractPhoneNumber(cleanText, lines);
 
   // 5. Location
   let location = '';
@@ -495,48 +494,230 @@ function parseWorkHistorySection(text: string) {
   return result;
 }
 
-function parseProjectsSection(text: string) {
-  const projMatch = text.match(/(?:PROJECTS|PERSONAL PROJECTS)[\s\S]*?(?=(?:SKILLS|EXPERIENCE|EDUCATION|SUMMARY|CERTIFICATIONS|\Z))/i);
-  if (!projMatch) return [];
+function extractPhoneNumber(cleanText: string, lines: string[]): string {
+  // 1. Try finding explicit phone labels first (Phone, Tel, Mobile, Cell, Contact, Ph, Mob)
+  const labeledMatch = cleanText.match(/(?:Phone|Telephone|Tel|Mobile|Mob|Cell|Contact|Ph)\s*[:\-–]?\s*(\+?[\d\s().-]{7,25})/i);
+  if (labeledMatch && labeledMatch[1]) {
+    const rawNum = labeledMatch[1].trim();
+    const digitsOnly = rawNum.replace(/\D/g, '');
+    if (digitsOnly.length >= 7 && digitsOnly.length <= 15) {
+      return rawNum.replace(/[,;|\s]+$/, '').trim();
+    }
+  }
 
-  const rawText = projMatch[0].replace(/^(?:PROJECTS|PERSONAL PROJECTS)\s*[:\-–]?\s*/i, '');
-  const lines = rawText.split('\n').map(l => l.trim()).filter(l => l && !/PROJECTS/i.test(l));
-  const result = [];
+  // 2. Scan header lines (first 10 lines) where contact details typically reside
+  const phonePattern = /(?:(?:\+|00)\d{1,3}[\s.-]?)?(?:\(?\d{2,5}\)?[\s.-]?)?\d{3,5}[\s.-]?\d{3,5}(?:[\s.-]?\d{2,5})?/;
+  
+  for (let i = 0; i < Math.min(lines.length, 10); i++) {
+    const line = lines[i];
+    // Skip lines that look like work experience dates
+    if (/(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|present|current)\b/i.test(line)) {
+      continue;
+    }
+    // Skip year ranges like 2019-2023 or 2020-2024
+    if (/\b(?:19|20)\d{2}\s*[-–]\s*(?:19|20)\d{2}\b/.test(line) && !line.includes('+')) {
+      continue;
+    }
+
+    const match = line.match(phonePattern);
+    if (match) {
+      const candidate = match[0].trim();
+      const digitsOnly = candidate.replace(/\D/g, '');
+      if (digitsOnly.length >= 10 && digitsOnly.length <= 15) {
+        return candidate;
+      }
+      if (candidate.startsWith('+') && digitsOnly.length >= 7 && digitsOnly.length <= 15) {
+        return candidate;
+      }
+    }
+  }
+
+  // 3. Scan for international formatted numbers
+  const intlMatch = cleanText.match(/(?:\+|00)\d{1,3}[\s.-]?\(?\d{2,5}\)?[\s.-]?\d{3,5}[\s.-]?\d{3,5}/);
+  if (intlMatch) {
+    const candidate = intlMatch[0].trim();
+    const digitsOnly = candidate.replace(/\D/g, '');
+    if (digitsOnly.length >= 7 && digitsOnly.length <= 15) {
+      return candidate;
+    }
+  }
+
+  // If no phone found, return empty string — no fake fallback
+  return '';
+}
+
+function parseProjectsSection(text: string) {
+  const projectHeaders = [
+    'PROJECTS',
+    'PERSONAL PROJECTS',
+    'ACADEMIC PROJECTS',
+    'KEY PROJECTS',
+    'NOTABLE PROJECTS',
+    'TECHNICAL PROJECTS',
+    'PROJECT WORK',
+    'SELECTED PROJECTS',
+    'FEATURED PROJECTS',
+    'PORTFOLIO',
+    'SYSTEMS & PROJECTS',
+    'APPLICATIONS & PROJECTS',
+    'OPEN SOURCE PROJECTS'
+  ];
+
+  const nextSectionHeaders = [
+    'SKILLS',
+    'TECHNICAL SKILLS',
+    'CORE COMPETENCIES',
+    'EXPERIENCE',
+    'WORK HISTORY',
+    'EMPLOYMENT',
+    'PROFESSIONAL EXPERIENCE',
+    'EDUCATION',
+    'ACADEMIC BACKGROUND',
+    'SUMMARY',
+    'PROFILE',
+    'CERTIFICATIONS',
+    'LICENSES',
+    'AWARDS',
+    'ACHIEVEMENTS',
+    'PUBLICATIONS',
+    'ACTIVITIES',
+    'LEADERSHIP',
+    'VOLUNTEERING'
+  ];
+
+  const headerRegex = new RegExp(`^[#*\\s-]*(?:${projectHeaders.join('|')})\\b\\s*[:\\-–]?[^\\n]*\\n([\\s\\S]*?)(?=(?:^[#*\\s-]*(?:${nextSectionHeaders.join('|')})\\b\\s*[:\\-–]?|\\Z))`, 'im');
+  const projMatch = text.match(headerRegex);
+
+  let rawSectionText = '';
+  if (projMatch && projMatch[1]) {
+    rawSectionText = projMatch[1].trim();
+  } else {
+    const simpleMatch = text.match(/(?:PROJECTS|PERSONAL PROJECTS|TECHNICAL PROJECTS|KEY PROJECTS|PROJECT WORK|PORTFOLIO)[\s\S]*?(?=(?:SKILLS|TECHNICAL SKILLS|EXPERIENCE|WORK HISTORY|EDUCATION|SUMMARY|CERTIFICATIONS|\Z))/i);
+    if (simpleMatch) {
+      rawSectionText = simpleMatch[0].replace(/^(?:PROJECTS|PERSONAL PROJECTS|TECHNICAL PROJECTS|KEY PROJECTS|PROJECT WORK|PORTFOLIO)\s*[:\-–]?\s*/i, '').trim();
+    }
+  }
+
+  if (!rawSectionText) return [];
+
+  const lines = rawSectionText.split('\n').map(l => l.trim()).filter(Boolean);
+  const result: Array<{
+    title: string;
+    description: string;
+    technologies: string[];
+    period?: string;
+    link?: string;
+    github?: string;
+    demoUrl?: string;
+  }> = [];
+
   let i = 0;
   while (i < lines.length) {
     const line = lines[i];
-    let lineClean = line.replace(/^[•*\-\d.]+\s*/, '').trim();
+    let lineClean = line.replace(/^[#*•\-\d.]+\s*/, '').trim();
+    
+    if (!lineClean || nextSectionHeaders.some(h => lineClean.toUpperCase().startsWith(h))) {
+      i++;
+      continue;
+    }
+
     let title = lineClean;
     let techs: string[] = [];
+    let period = '';
+    let link = '';
+    let github = '';
+    let demoUrl = '';
 
+    // Check for links/URLs
+    const urlMatch = lineClean.match(/(https?:\/\/[^\s)]+|github\.com\/[^\s)]+)/i);
+    if (urlMatch) {
+      const foundUrl = urlMatch[1].startsWith('http') ? urlMatch[1] : `https://${urlMatch[1]}`;
+      if (foundUrl.includes('github.com')) github = foundUrl;
+      else demoUrl = foundUrl;
+      link = foundUrl;
+      lineClean = lineClean.replace(urlMatch[0], '').replace(/[()[\]|]/g, ' ').trim();
+    }
+
+    // Check for date/period
+    const dateMatch = lineClean.match(/\(?((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s*\d{0,4}\s*[-–]\s*(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|present|current|\d{4})|\b20\d\d\s*[-–]\s*20\d\d\b|\b20\d\d\b)\)?/i);
+    if (dateMatch) {
+      period = dateMatch[0].replace(/[()]/g, '').trim();
+      lineClean = lineClean.replace(dateMatch[0], '').trim();
+    }
+
+    // Extract technologies
     const techM = lineClean.match(/\(([^)]+)\)/);
     if (techM) {
-      techs = techM[1].split(/[,/|]/).map(t => t.trim()).filter(Boolean);
+      techs = techM[1].split(/[,/|•]/).map(t => t.trim()).filter(Boolean);
       title = lineClean.replace(techM[0], '').trim();
+    } else if (/\s+[—–\-–|]\s+/.test(lineClean)) {
+      const parts = lineClean.split(/\s+[—–\-–|]\s+/);
+      title = parts[0].trim();
+      if (parts[1]) {
+        if (/react|node|python|java|sql|aws|docker|typescript|next|vue|fastapi|django|flask|mongo|tailwind|css|html/i.test(parts[1])) {
+          techs = parts[1].replace(/^(?:Tech|Stack|Tools|Technologies)\s*[:\-–]?\s*/i, '').split(/[,/|•]/).map(t => t.trim()).filter(Boolean);
+        }
+      }
+    } else {
+      title = lineClean.replace(/^[:\-–\s]+/, '').trim();
     }
 
-    if (/\s+[—–\-]+\s+/.test(lineClean)) {
-      const parts = lineClean.split(/\s+[—–\-]+\s+/);
-      title = parts[0].trim();
-      if (parts[1]) techs = parts[1].split(/[,/|]/).map(t => t.trim()).filter(Boolean);
-    }
+    title = title.replace(/[—–\-–|:,]+$/, '').trim();
 
     const descBullets: string[] = [];
     i++;
+
     while (i < lines.length) {
       const cur = lines[i];
       const curClean = cur.replace(/^[•*\-\d.]+\s*/, '').trim();
-      if (/SKILLS|EXPERIENCE|EDUCATION|CERTIFICATIONS/i.test(curClean)) break;
-      if (!cur.startsWith('-') && !cur.startsWith('•') && (cur.includes('(') || /\s+[—–\-]+\s+/.test(cur))) break;
-      descBullets.push(curClean);
+      
+      if (nextSectionHeaders.some(h => curClean.toUpperCase().startsWith(h))) {
+        break;
+      }
+
+      const techStackMatch = curClean.match(/^(?:Tech(?:nologies|\s*Stack)?|Tools|Built with|Environment|Stack)\s*[:\-–]\s*(.+)/i);
+      if (techStackMatch && techStackMatch[1]) {
+        const extractedTechs = techStackMatch[1].split(/[,/|•]/).map(t => t.trim()).filter(Boolean);
+        techs = Array.from(new Set([...techs, ...extractedTechs]));
+        i++;
+        continue;
+      }
+
+      const lineUrlMatch = curClean.match(/(https?:\/\/[^\s)]+|github\.com\/[^\s)]+)/i);
+      if (lineUrlMatch && (curClean.length < 100 || /link|github|demo|repo|code/i.test(curClean))) {
+        const foundUrl = lineUrlMatch[1].startsWith('http') ? lineUrlMatch[1] : `https://${lineUrlMatch[1]}`;
+        if (foundUrl.includes('github.com')) github = foundUrl;
+        else demoUrl = foundUrl;
+        link = foundUrl;
+        i++;
+        continue;
+      }
+
+      const isBullet = /^[•*\-]|\d+\./.test(cur);
+      const isMarkdownHeader = /^#{1,4}\s+/.test(cur);
+      const hasDateOrTech = /\(([^)]+)\)/.test(cur) || /\s+[—–\-–|]\s+/.test(cur);
+      
+      if (!isBullet && (isMarkdownHeader || hasDateOrTech) && descBullets.length > 0) {
+        break;
+      }
+
+      if (curClean) {
+        descBullets.push(curClean);
+      }
       i++;
     }
 
-    result.push({
-      title,
-      technologies: techs,
-      description: descBullets.join(' ')
-    });
+    if (title.length >= 2) {
+      result.push({
+        title,
+        period,
+        technologies: techs,
+        description: descBullets.join(' '),
+        link: link || undefined,
+        github: github || undefined,
+        demoUrl: demoUrl || undefined
+      });
+    }
   }
 
   return result;

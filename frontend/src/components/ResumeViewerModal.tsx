@@ -442,11 +442,41 @@ export const ResumeViewerModal: React.FC<ResumeViewerModalProps> = ({ candidate,
                 )}
               </div>
 
+              {candidate.projects && candidate.projects.length > 0 && (
+                <div style={{ marginBottom: '18px' }}>
+                  <span className="summary-title">Projects</span>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                    {candidate.projects.map((p, idx) => (
+                      <div key={idx} style={{ padding: '8px 10px', backgroundColor: '#f8fafc', borderRadius: '6px', border: '1px solid #e2e8f0' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                          <b style={{ fontSize: '12px', color: '#0f172a' }}>{p.title}</b>
+                          {p.period && <small style={{ color: '#64748b' }}>{p.period}</small>}
+                        </div>
+                        {p.technologies && p.technologies.length > 0 && (
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px', margin: '4px 0' }}>
+                            {p.technologies.map((t, tIdx) => (
+                              <span key={tIdx} style={{ fontSize: '10px', padding: '1px 5px', borderRadius: '3px', backgroundColor: '#e0e7ff', color: '#3730a3', fontWeight: 500 }}>
+                                {t}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        {p.description && (
+                          <p style={{ fontSize: '11px', color: '#475569', margin: '4px 0 0', lineHeight: 1.4 }}>
+                            {p.description}
+                          </p>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div>
                 <span className="summary-title">Education</span>
                 {candidate.education && candidate.education.length > 0 ? (
                   candidate.education.map((e, idx) => (
-                    <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#475569' }}>
+                    <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: '#475569', marginBottom: '6px' }}>
                       <div>
                         <b style={{ color: '#0f172a' }}>{e.degree}</b> · {e.institution}
                       </div>
